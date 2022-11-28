@@ -2,11 +2,12 @@ package rateLimitTcp
 
 import (
 	"context"
-	"golang.org/x/time/rate"
 	"net"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"golang.org/x/time/rate"
 )
 
 type PerConnectionLimiter struct {

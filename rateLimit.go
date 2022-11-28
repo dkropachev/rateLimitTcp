@@ -1,10 +1,11 @@
 package rateLimitTcp
 
 import (
-	"golang.org/x/time/rate"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 type Direction int

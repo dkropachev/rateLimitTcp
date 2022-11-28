@@ -2,11 +2,12 @@ package functional_test
 
 import (
 	"context"
-	"github.com/dkropachev/rateLimitTcp"
-	testutils "github.com/dkropachev/rateLimitTcp/tests/utils"
 	"math/big"
 	"math/rand"
 	"sync"
+
+	"github.com/dkropachev/rateLimitTcp"
+	testutils "github.com/dkropachev/rateLimitTcp/tests/utils"
 )
 
 type MockClient struct {

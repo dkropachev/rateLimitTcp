@@ -2,10 +2,11 @@ package functional_test
 
 import (
 	"context"
-	"github.com/dkropachev/rateLimitTcp"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	"github.com/dkropachev/rateLimitTcp"
+	"github.com/stretchr/testify/assert"
 )
 
 func CreateFakeClients(limiter *rateLimitTcp.RateLimiter, n int) MockClients {

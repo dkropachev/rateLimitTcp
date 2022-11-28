@@ -1,14 +1,15 @@
 package net_test
 
 import (
-	"github.com/dkropachev/rateLimitTcp"
-	testutils "github.com/dkropachev/rateLimitTcp/tests/utils"
-	"github.com/stretchr/testify/assert"
 	"log"
 	"math/rand"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/dkropachev/rateLimitTcp"
+	testutils "github.com/dkropachev/rateLimitTcp/tests/utils"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
