@@ -81,9 +81,22 @@ func (l *RateLimiter) GetGlobalBurst() int {
 	return l.globalLimiter.Burst()
 }
 
+func (l *RateLimiter) GetPerConnectionLimitersCount() int {
+	return len(l.perConnectionLimiters)
+}
+
+func (l *RateLimiter) IsGCRunning() bool {
+	res := l.perConnectionLimitersGCLock.TryLock()
+	if res {
+		l.perConnectionLimitersGCLock.Unlock()
+		return false
+	}
+	return true
+}
+
 func (l *RateLimiter) TickPerConnectionLimiterClosedCounter() {
 	res := atomic.AddInt32(&l.perConnectionLimitersClosed, 1)
-	if res == int32(l.perConnectionLimitersCollectedLimit) {
+	if l.perConnectionLimitersCollectedLimit != 0 && res == int32(l.perConnectionLimitersCollectedLimit) {
 		atomic.StoreInt32(&l.perConnectionLimitersClosed, 0)
 		go l.RunGC(l.perConnectionLimitersKeepAlive)
 	}
@@ -122,7 +135,8 @@ func (l *RateLimiter) RunGC(shift time.Duration) {
 			l.perConnectionLimitersCollected++
 		}
 	}
-	if l.perConnectionLimitersCollected > l.perConnectionLimitersCollectedLimit {
+	if l.perConnectionLimitersCollected >= l.perConnectionLimitersCollectedLimit {
+		// Recreate l.perConnectionLimiters since maps do not shrink
 		oldMap := l.perConnectionLimiters
 		l.perConnectionLimiters = make(map[string]*PerConnectionLimiter, len(oldMap)-l.perConnectionLimitersCollected)
 		for key, lock := range oldMap {
