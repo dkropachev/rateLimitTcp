@@ -1,0 +1,11 @@
+orbs:
+  go: frameio/go@0.29.2
+
+version: 2.1
+
+workflows:
+  ci:
+    jobs:
+      - go/fmt
+      - go/lint
+      - go/test
