@@ -53,13 +53,15 @@ func TestNet(t *testing.T) {
 }
 
 func handleIncomingRequest(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
-	conn.Write(initMessage)
+	_, _ = conn.Write(initMessage)
 	buffer := make([]byte, 1024)
 	_, err := conn.Read(buffer)
 	if err != nil {
 		log.Fatal(err)
 	}
-	conn.Write(buffer)
+	_, _ = conn.Write(buffer)
 }
