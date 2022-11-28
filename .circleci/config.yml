@@ -13,9 +13,19 @@ jobs:
       - checkout
       - go/load-cache
       - go/mod-download
+      - run:
+          command: |
+            go install golang.org/x/tools/cmd/goimports@latest
       - go/save-cache
+      - run:
+          command: |
+            goimports -d ./
+      - run:
+          command: |
+            gofmt -l -s ./
       - go/test:
           failfast: true
+
 
 workflows:
   ci:
