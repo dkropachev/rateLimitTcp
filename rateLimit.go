@@ -3,6 +3,7 @@ package rateLimitTcp
 import (
 	"golang.org/x/time/rate"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,6 +12,9 @@ type Direction int
 const (
 	Inbound  = Direction(1)
 	Outbound = Direction(2)
+
+	defaultGCConnectionLimit     = 100
+	defaultGCConnectionKeepAlive = time.Minute * 2
 )
 
 func (d Direction) IsInbound() bool {
@@ -22,20 +26,43 @@ func (d Direction) IsOutbound() bool {
 }
 
 type RateLimiter struct {
-	globalLimiter             *rate.Limiter
-	perConnectionLimiters     map[string]*PerConnectionLimiter
-	perConnectionLimitersLock sync.RWMutex
-	perConnectionLimit        rate.Limit
-	perConnectionBurst        int
+	globalLimiter                       *rate.Limiter
+	perConnectionLimiters               map[string]*PerConnectionLimiter
+	perConnectionLimitersLock           sync.RWMutex
+	perConnectionLimit                  rate.Limit
+	perConnectionBurst                  int
+	perConnectionLimitersCollected      int
+	perConnectionLimitersCollectedLimit int
+	perConnectionLimitersKeepAlive      time.Duration
+	perConnectionLimitersClosed         int32
+	perConnectionLimitersGCLock         sync.Mutex
 }
 
 func NewRateLimiter(globalLimit, perConnectionLimit rate.Limit, globalBurst int, perConnectionBurst int) *RateLimiter {
 	return &RateLimiter{
-		globalLimiter:         rate.NewLimiter(globalLimit, globalBurst),
-		perConnectionLimit:    perConnectionLimit,
-		perConnectionBurst:    perConnectionBurst,
-		perConnectionLimiters: make(map[string]*PerConnectionLimiter),
+		globalLimiter:                       rate.NewLimiter(globalLimit, globalBurst),
+		perConnectionLimit:                  perConnectionLimit,
+		perConnectionBurst:                  perConnectionBurst,
+		perConnectionLimiters:               make(map[string]*PerConnectionLimiter),
+		perConnectionLimitersCollectedLimit: defaultGCConnectionLimit,
+		perConnectionLimitersKeepAlive:      defaultGCConnectionKeepAlive,
 	}
+}
+
+func (l *RateLimiter) SetConnectionGCLimit(newLimit int) {
+	l.perConnectionLimitersCollectedLimit = newLimit
+}
+
+func (l *RateLimiter) GetConnectionGCLimit() int {
+	return l.perConnectionLimitersCollectedLimit
+}
+
+func (l *RateLimiter) SetConnectionKeepAlive(val time.Duration) {
+	l.perConnectionLimitersKeepAlive = val
+}
+
+func (l *RateLimiter) GetConnectionKeepAlive() time.Duration {
+	return l.perConnectionLimitersKeepAlive
 }
 
 func (l *RateLimiter) SetGlobalLimit(newLimit rate.Limit) {
@@ -54,6 +81,14 @@ func (l *RateLimiter) GetGlobalBurst() int {
 	return l.globalLimiter.Burst()
 }
 
+func (l *RateLimiter) TickPerConnectionLimiterClosedCounter() {
+	res := atomic.AddInt32(&l.perConnectionLimitersClosed, 1)
+	if res == int32(l.perConnectionLimitersCollectedLimit) {
+		atomic.StoreInt32(&l.perConnectionLimitersClosed, 0)
+		go l.RunGC(l.perConnectionLimitersKeepAlive)
+	}
+}
+
 func (l *RateLimiter) SetPerConnectionLimitAndBurst(newLimit rate.Limit, newBurst int) {
 	l.perConnectionLimitersLock.Lock()
 	l.perConnectionLimit = newLimit
@@ -61,8 +96,10 @@ func (l *RateLimiter) SetPerConnectionLimitAndBurst(newLimit rate.Limit, newBurs
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	for _, lock := range l.perConnectionLimiters {
-		lock.setLimit(newLimit)
-		lock.setBurst(newBurst)
+		if lock != nil {
+			lock.setLimit(newLimit)
+			lock.setBurst(newBurst)
+		}
 	}
 }
 
@@ -72,6 +109,31 @@ func (l *RateLimiter) GetPerConnectionLimitAndBurst() (rate.Limit, int) {
 	return l.perConnectionLimit, l.perConnectionBurst
 }
 
+func (l *RateLimiter) RunGC(shift time.Duration) {
+	if !l.perConnectionLimitersGCLock.TryLock() {
+		return
+	}
+	defer l.perConnectionLimitersGCLock.Unlock()
+	l.perConnectionLimitersLock.Lock()
+	defer l.perConnectionLimitersLock.Unlock()
+	for key, lock := range l.perConnectionLimiters {
+		if lock.closedFor(shift) {
+			l.perConnectionLimiters[key] = nil
+			l.perConnectionLimitersCollected++
+		}
+	}
+	if l.perConnectionLimitersCollected > l.perConnectionLimitersCollectedLimit {
+		oldMap := l.perConnectionLimiters
+		l.perConnectionLimiters = make(map[string]*PerConnectionLimiter, len(oldMap)-l.perConnectionLimitersCollected)
+		for key, lock := range oldMap {
+			if lock != nil {
+				l.perConnectionLimiters[key] = lock
+			}
+		}
+		l.perConnectionLimitersCollected = 0
+	}
+}
+
 func (l *RateLimiter) SetPerConnectionBurst(newBurst int) {
 	l.perConnectionLimitersLock.Lock()
 	l.perConnectionBurst = newBurst
@@ -79,7 +141,9 @@ func (l *RateLimiter) SetPerConnectionBurst(newBurst int) {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	for _, lock := range l.perConnectionLimiters {
-		lock.setBurst(newBurst)
+		if lock != nil {
+			lock.setBurst(newBurst)
+		}
 	}
 }
 
@@ -96,7 +160,9 @@ func (l *RateLimiter) SetPerConnectionLimit(newLimit rate.Limit) {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	for _, lock := range l.perConnectionLimiters {
-		lock.setLimit(newLimit)
+		if lock != nil {
+			lock.setLimit(newLimit)
+		}
 	}
 }
 
@@ -122,10 +188,11 @@ func (l *RateLimiter) GetGlobalLimiter() *rate.Limiter {
 	return l.globalLimiter
 }
 
-func (l *RateLimiter) newPerConnectionLimit() *PerConnectionLimiter {
+func (l *RateLimiter) newPerConnectionLimit(key string) *PerConnectionLimiter {
 	return &PerConnectionLimiter{
-		localLimiter:  rate.NewLimiter(l.perConnectionLimit, l.perConnectionBurst),
-		globalLimiter: l.globalLimiter,
+		key:          key,
+		localLimiter: rate.NewLimiter(l.perConnectionLimit, l.perConnectionBurst),
+		parent:       l,
 	}
 }
 
@@ -144,7 +211,7 @@ func (l *RateLimiter) GetPerConnectionLimiter(key string) *PerConnectionLimiter 
 	if limiter != nil {
 		return limiter
 	}
-	limiter = l.newPerConnectionLimit()
+	limiter = l.newPerConnectionLimit(key)
 	l.perConnectionLimiters[key] = limiter
 	return limiter
 }

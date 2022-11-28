@@ -4,16 +4,41 @@ import (
 	"context"
 	"golang.org/x/time/rate"
 	"net"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 type PerConnectionLimiter struct {
-	localLimiter  *rate.Limiter
-	globalLimiter *rate.Limiter
+	key          string
+	localLimiter *rate.Limiter
+	parent       *RateLimiter
+	closeTime    *time.Time
+}
+
+func (pcl *PerConnectionLimiter) Open() *PerConnectionLimiter {
+	pcl.closeTime = nil
+	return pcl
+}
+
+func (pcl *PerConnectionLimiter) Close() *PerConnectionLimiter {
+	now := time.Now().UTC()
+	pcl.closeTime = &now
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&pcl.closeTime)), unsafe.Pointer(&now))
+	pcl.parent.TickPerConnectionLimiterClosedCounter()
+	return pcl
+}
+
+func (pcl *PerConnectionLimiter) closedFor(shift time.Duration) bool {
+	closeTime := (*time.Time)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&pcl.closeTime))))
+	if closeTime == nil {
+		return false
+	}
+	return closeTime.Before(time.Now().UTC().Add(-shift))
 }
 
 func (pcl *PerConnectionLimiter) AllowN(t time.Time, n int) bool {
-	return pcl.globalLimiter.AllowN(t, n) && pcl.localLimiter.AllowN(t, n)
+	return pcl.parent.globalLimiter.AllowN(t, n) && pcl.localLimiter.AllowN(t, n)
 }
 
 func (pcl *PerConnectionLimiter) Allow() bool {
@@ -21,7 +46,7 @@ func (pcl *PerConnectionLimiter) Allow() bool {
 }
 
 func (pcl *PerConnectionLimiter) WaitN(ctx context.Context, n int) error {
-	err := pcl.globalLimiter.WaitN(ctx, n)
+	err := pcl.parent.globalLimiter.WaitN(ctx, n)
 	if err != nil {
 		return err
 	}
@@ -33,7 +58,7 @@ func (pcl *PerConnectionLimiter) Wait(ctx context.Context) error {
 }
 
 func (pcl *PerConnectionLimiter) Burst() int {
-	gb := pcl.globalLimiter.Burst()
+	gb := pcl.parent.globalLimiter.Burst()
 	lb := pcl.localLimiter.Burst()
 	if gb > lb {
 		return lb
@@ -42,7 +67,7 @@ func (pcl *PerConnectionLimiter) Burst() int {
 }
 
 func (pcl *PerConnectionLimiter) TokensAt(t time.Time) float64 {
-	gt := pcl.globalLimiter.TokensAt(t)
+	gt := pcl.parent.globalLimiter.TokensAt(t)
 	lt := pcl.localLimiter.TokensAt(t)
 	if gt > lt {
 		return lt
@@ -55,7 +80,7 @@ func (pcl *PerConnectionLimiter) Tokens() float64 {
 }
 
 func (pcl *PerConnectionLimiter) Limit() rate.Limit {
-	gl := pcl.globalLimiter.Limit()
+	gl := pcl.parent.globalLimiter.Limit()
 	ll := pcl.localLimiter.Limit()
 	if gl > ll {
 		return ll
@@ -135,6 +160,7 @@ func (wc *WrappedNetConnection) Write(b []byte) (int, error) {
 }
 
 func (wc *WrappedNetConnection) Close() error {
+	wc.limiter.Close()
 	return wc.real.Close()
 }
 

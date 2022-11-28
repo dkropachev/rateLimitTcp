@@ -32,7 +32,7 @@ func TestNet(t *testing.T) {
 			if err != nil {
 				return
 			}
-			connLimiter := limiter.GetPerConnectionLimiter(getLimiterHashFromConnection(conn))
+			connLimiter := limiter.GetPerConnectionLimiter(getLimiterHashFromConnection(conn)).Open()
 			go handleIncomingRequest(connLimiter.WrappedNetConnection(conn).SetDirections(rateLimitTcp.Outbound & rateLimitTcp.Inbound).SetDefaultTimeout(time.Second))
 		}
 	}()
@@ -52,16 +52,13 @@ func TestNet(t *testing.T) {
 }
 
 func handleIncomingRequest(conn net.Conn) {
-	// store incoming data
+	defer conn.Close()
+
 	conn.Write(initMessage)
 	buffer := make([]byte, 1024)
 	_, err := conn.Read(buffer)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// respond
 	conn.Write(buffer)
-
-	// close conn
-	conn.Close()
 }

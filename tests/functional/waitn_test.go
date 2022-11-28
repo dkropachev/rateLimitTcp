@@ -3,72 +3,13 @@ package functional_test
 import (
 	"context"
 	"github.com/dkropachev/rateLimitTcp"
-	testutils "github.com/dkropachev/rateLimitTcp/tests/utils"
 	"github.com/stretchr/testify/assert"
-	"math/big"
-	"math/rand"
-	"sync"
 	"testing"
 	"time"
 )
 
-func Client() {
-
-}
-
-type FakeClient struct {
-	idx          string
-	connLimiter  *rateLimitTcp.PerConnectionLimiter
-	writeLimit   int
-	bytesWritten int64
-}
-
-func NewClient(limiter *rateLimitTcp.RateLimiter) *FakeClient {
-	clientIdx := testutils.RandString(15)
-	return &FakeClient{
-		idx:         clientIdx,
-		connLimiter: limiter.GetPerConnectionLimiter(clientIdx),
-		writeLimit:  int(limiter.GetPerConnectionLimit()) - 1,
-	}
-}
-
-func (cl *FakeClient) Run(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for {
-		bytesToWrite := rand.Intn(cl.writeLimit)
-		err := cl.connLimiter.WaitN(ctx, bytesToWrite)
-		if err != nil {
-			return
-		}
-		cl.bytesWritten += int64(bytesToWrite)
-	}
-}
-
-func (cl *FakeClient) GetBytesWritten() int64 {
-	return cl.bytesWritten
-}
-
-type FakeClients []*FakeClient
-
-func (l FakeClients) StartAll(ctx context.Context) *sync.WaitGroup {
-	wg := sync.WaitGroup{}
-	wg.Add(len(l))
-	for _, cl := range l {
-		go cl.Run(ctx, &wg)
-	}
-	return &wg
-}
-
-func (l FakeClients) GetTotalBytesWritten() *big.Int {
-	out := big.NewInt(0)
-	for _, cl := range l {
-		out.Add(out, big.NewInt(cl.GetBytesWritten()))
-	}
-	return out
-}
-
-func CreateFakeClients(limiter *rateLimitTcp.RateLimiter, n int) FakeClients {
-	clients := make([]*FakeClient, n)
+func CreateFakeClients(limiter *rateLimitTcp.RateLimiter, n int) MockClients {
+	clients := make([]*MockClient, n)
 	for k := range clients {
 		clients[k] = NewClient(limiter)
 	}
