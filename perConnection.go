@@ -27,7 +27,7 @@ func (pcl *PerConnectionLimiter) Close() *PerConnectionLimiter {
 	val := (*time.Time)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&pcl.closeTime))))
 	if val == nil {
 		atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&pcl.closeTime)), unsafe.Pointer(&now))
-		pcl.parent.TickPerConnectionLimiterClosedCounter()
+		pcl.parent.tickPerConnectionLimiterClosedCounter()
 	}
 	return pcl
 }

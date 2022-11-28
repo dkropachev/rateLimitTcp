@@ -50,44 +50,57 @@ func NewRateLimiter(globalLimit, perConnectionLimit rate.Limit, globalBurst int,
 	}
 }
 
+//SetConnectionGCLimit set number of connections to be closed to trigger GC
+// same limit is applied to number of deallocated limiters by GC to trigger `perConnectionLimiters` recreation
+// It is not thread safe
 func (l *RateLimiter) SetConnectionGCLimit(newLimit int) {
 	l.perConnectionLimitersCollectedLimit = newLimit
 }
 
+//GetConnectionGCLimit get number of connections to be closed to trigger GC
+// It is not thread safe
 func (l *RateLimiter) GetConnectionGCLimit() int {
 	return l.perConnectionLimitersCollectedLimit
 }
 
+// SetConnectionKeepAlive set time for how long closed connection limiter is going to be kept, it is not thread safe
 func (l *RateLimiter) SetConnectionKeepAlive(val time.Duration) {
 	l.perConnectionLimitersKeepAlive = val
 }
 
+// GetConnectionKeepAlive get time for how long closed connection limiter is going to be kept, it is not thread safe
 func (l *RateLimiter) GetConnectionKeepAlive() time.Duration {
 	return l.perConnectionLimitersKeepAlive
 }
 
+// SetGlobalLimit get global limiter limit, it is thread safe
 func (l *RateLimiter) SetGlobalLimit(newLimit rate.Limit) {
 	l.globalLimiter.SetLimit(newLimit)
 }
 
+// GetGlobalLimit get global limiter limit, it is thread safe
 func (l *RateLimiter) GetGlobalLimit() rate.Limit {
 	return l.globalLimiter.Limit()
 }
 
+// SetGlobalBurst set global limiter burst, it is thread safe
 func (l *RateLimiter) SetGlobalBurst(newBurst int) {
 	l.globalLimiter.SetBurst(newBurst)
 }
 
+// GetGlobalBurst get global limiter burst, it is thread safe
 func (l *RateLimiter) GetGlobalBurst() int {
 	return l.globalLimiter.Burst()
 }
 
+// GetPerConnectionLimitersCount return number of per connection limiters, it is thread safe
 func (l *RateLimiter) GetPerConnectionLimitersCount() int {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	return len(l.perConnectionLimiters)
 }
 
+// IsGCRunning return try if GC is currently running, it is thread safe
 func (l *RateLimiter) IsGCRunning() bool {
 	res := l.perConnectionLimitersGCLock.TryLock()
 	if res {
@@ -97,7 +110,10 @@ func (l *RateLimiter) IsGCRunning() bool {
 	return true
 }
 
-func (l *RateLimiter) TickPerConnectionLimiterClosedCounter() {
+// tickPerConnectionLimiterClosedCounter updates counter of closed connections
+// and trigger GC when `perConnectionLimitersCollectedLimit` is reached
+// it is thread safe
+func (l *RateLimiter) tickPerConnectionLimiterClosedCounter() {
 	res := atomic.AddInt32(&l.perConnectionLimitersClosed, 1)
 	if l.perConnectionLimitersCollectedLimit != 0 && res == int32(l.perConnectionLimitersCollectedLimit) {
 		atomic.StoreInt32(&l.perConnectionLimitersClosed, 0)
@@ -105,6 +121,7 @@ func (l *RateLimiter) TickPerConnectionLimiterClosedCounter() {
 	}
 }
 
+// SetPerConnectionLimitAndBurst set per connection limit and burst, update currently registered limiters, it is thread safe
 func (l *RateLimiter) SetPerConnectionLimitAndBurst(newLimit rate.Limit, newBurst int) {
 	l.perConnectionLimitersLock.Lock()
 	l.perConnectionLimit = newLimit
@@ -119,13 +136,16 @@ func (l *RateLimiter) SetPerConnectionLimitAndBurst(newLimit rate.Limit, newBurs
 	}
 }
 
+// GetPerConnectionLimitAndBurst get per connection limit and burst, it is thread safe
 func (l *RateLimiter) GetPerConnectionLimitAndBurst() (rate.Limit, int) {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	return l.perConnectionLimit, l.perConnectionBurst
 }
 
-func (l *RateLimiter) RunGC(shift time.Duration) {
+// RunGC goes over registered limiters, find ones that where closed some time (`period`) ago and remove them from the
+// `perConnectionLimiters`, once in a while it recreates `perConnectionLimiters` in order to shrink it
+func (l *RateLimiter) RunGC(period time.Duration) {
 	if !l.perConnectionLimitersGCLock.TryLock() {
 		return
 	}
@@ -133,7 +153,7 @@ func (l *RateLimiter) RunGC(shift time.Duration) {
 	l.perConnectionLimitersLock.Lock()
 	defer l.perConnectionLimitersLock.Unlock()
 	for key, lock := range l.perConnectionLimiters {
-		if lock.closedFor(shift) {
+		if lock.closedFor(period) {
 			l.perConnectionLimiters[key] = nil
 			l.perConnectionLimitersCollected++
 		}
@@ -151,6 +171,7 @@ func (l *RateLimiter) RunGC(shift time.Duration) {
 	}
 }
 
+// SetPerConnectionBurst set per connection burst and update currently registered limiters, it is thread safe
 func (l *RateLimiter) SetPerConnectionBurst(newBurst int) {
 	l.perConnectionLimitersLock.Lock()
 	l.perConnectionBurst = newBurst
@@ -164,12 +185,14 @@ func (l *RateLimiter) SetPerConnectionBurst(newBurst int) {
 	}
 }
 
+// GetPerConnectionBurst get per connection burst, it is thread safe
 func (l *RateLimiter) GetPerConnectionBurst() int {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	return l.perConnectionBurst
 }
 
+// SetPerConnectionLimit set per connection limit, and update currently registered limiters, it is thread safe
 func (l *RateLimiter) SetPerConnectionLimit(newLimit rate.Limit) {
 	l.perConnectionLimitersLock.Lock()
 	l.perConnectionLimit = newLimit
@@ -183,24 +206,14 @@ func (l *RateLimiter) SetPerConnectionLimit(newLimit rate.Limit) {
 	}
 }
 
+// GetPerConnectionLimit get per connection limit, it is thread safe
 func (l *RateLimiter) GetPerConnectionLimit() rate.Limit {
 	l.perConnectionLimitersLock.RLock()
 	defer l.perConnectionLimitersLock.RUnlock()
 	return l.perConnectionLimit
 }
 
-func (l *RateLimiter) IsGlobalLimitReached() bool {
-	// Check if global limit can handle 1 second of new connection
-	// In case you want to limit it
-	return !l.globalLimiter.AllowN(time.Now().UTC(), int(l.perConnectionLimit))
-}
-
-func (l *RateLimiter) IsGlobalLimitAllowN(bytesNum int) bool {
-	// Check if global limit can handle 1 second of new connection
-	// In case you want to limit it
-	return !l.globalLimiter.AllowN(time.Now().UTC(), bytesNum)
-}
-
+// GetGlobalLimiter get global limiter, this limiter never changes, so it is thread safe
 func (l *RateLimiter) GetGlobalLimiter() *rate.Limiter {
 	return l.globalLimiter
 }
@@ -213,6 +226,7 @@ func (l *RateLimiter) newPerConnectionLimit(key string) *PerConnectionLimiter {
 	}
 }
 
+// GetPerConnectionLimiter get per connection limiter, create it if it does not exist, it is thread safe
 func (l *RateLimiter) GetPerConnectionLimiter(key string) *PerConnectionLimiter {
 	l.perConnectionLimitersLock.RLock()
 	limiter := l.perConnectionLimiters[key]
