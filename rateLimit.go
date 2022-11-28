@@ -83,6 +83,8 @@ func (l *RateLimiter) GetGlobalBurst() int {
 }
 
 func (l *RateLimiter) GetPerConnectionLimitersCount() int {
+	l.perConnectionLimitersLock.RLock()
+	defer l.perConnectionLimitersLock.RUnlock()
 	return len(l.perConnectionLimiters)
 }
 
