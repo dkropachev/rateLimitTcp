@@ -11,19 +11,33 @@ import (
 type Direction int
 
 const (
-	Inbound  = Direction(1)
-	Outbound = Direction(2)
+	NotOperational = Direction(0)
+	Inbound        = Direction(1)
+	Outbound       = Direction(2)
 
 	defaultGCConnectionLimit     = 100
 	defaultGCConnectionKeepAlive = time.Minute * 2
 )
 
 func (d Direction) IsInbound() bool {
-	return (d & Inbound) == 1
+	return (d & Inbound) > 0
 }
 
 func (d Direction) IsOutbound() bool {
-	return (d & Outbound) == 1
+	return (d & Outbound) > 0
+}
+
+func (d Direction) ToString() string {
+	switch {
+	case d.IsOutbound() && d.IsInbound():
+		return "Inbound&Outbound"
+	case d.IsOutbound():
+		return "Outbound"
+	case d.IsInbound():
+		return "Inbound"
+	default:
+		return "NotOperational"
+	}
 }
 
 type RateLimiter struct {

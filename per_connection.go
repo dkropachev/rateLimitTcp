@@ -3,6 +3,7 @@ package rateLimitTcp
 import (
 	"context"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -54,11 +55,27 @@ func (pcl *PerConnectionLimiter) Allow() bool {
 
 // WaitN analogue of `WaitN` of `rate` package, but takes into account both global and connection limiter
 func (pcl *PerConnectionLimiter) WaitN(ctx context.Context, n int) error {
-	err := pcl.parent.globalLimiter.WaitN(ctx, n)
-	if err != nil {
-		return err
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	var gErr error
+	var lErr error
+	go func() {
+		gErr = pcl.parent.globalLimiter.WaitN(ctx, n)
+		wg.Done()
+	}()
+	go func() {
+		lErr = pcl.localLimiter.WaitN(ctx, n)
+		wg.Done()
+	}()
+	wg.Wait()
+
+	if gErr != nil {
+		return gErr
 	}
-	return pcl.localLimiter.WaitN(ctx, n)
+	if lErr != nil {
+		return lErr
+	}
+	return nil
 }
 
 // Wait analogue of `Wait` of `rate` package, but takes into account both global and connection limiter
@@ -101,6 +118,18 @@ func (pcl *PerConnectionLimiter) Limit() rate.Limit {
 	return ll
 }
 
+// ReserveN analogue of `ReserveN` of `rate` package, but gets both global and connection reservations and compounds them
+func (pcl *PerConnectionLimiter) ReserveN(t time.Time, n int) *WrappedReservation {
+	gr := pcl.parent.globalLimiter.ReserveN(t, n)
+	if !gr.OK() {
+		return &WrappedReservation{global: gr}
+	}
+	return &WrappedReservation{
+		global: gr,
+		local:  pcl.localLimiter.ReserveN(t, n),
+	}
+}
+
 func (pcl *PerConnectionLimiter) setLimit(newLimit rate.Limit) {
 	pcl.localLimiter.SetLimit(newLimit)
 }
@@ -116,93 +145,4 @@ func (pcl *PerConnectionLimiter) WrappedNetConnection(conn net.Conn) *WrappedNet
 		real:    conn,
 		limiter: pcl,
 	}
-}
-
-type WrappedNetConnection struct {
-	real           net.Conn
-	limiter        *PerConnectionLimiter
-	defaultTimeout time.Duration
-	directions     Direction
-}
-
-// SetDefaultTimeout set default timeout that is applied to reads/writes while waiting for limit
-// It is not thread safe, use it once, when connection just wrapped
-func (wc *WrappedNetConnection) SetDefaultTimeout(timeout time.Duration) *WrappedNetConnection {
-	wc.defaultTimeout = timeout
-	return wc
-}
-
-// SetDirections set direction to limit,
-// `Inbound` - Reads are limited, data could be lost when timeout is reached
-// `Outbound` - Writes are limited, operation returns error when timeout is reached
-// You can use bitwise or `|` to limit both directions
-func (wc *WrappedNetConnection) SetDirections(direction Direction) *WrappedNetConnection {
-	wc.directions = direction
-	return wc
-}
-
-func (wc *WrappedNetConnection) Read(b []byte) (int, error) {
-	var cancel context.CancelFunc
-
-	out := make([]byte, len(b))
-	n, err := wc.real.Read(out)
-	if !wc.directions.IsInbound() || err != nil {
-		return n, err
-	}
-	ctx := context.Background()
-	if wc.defaultTimeout != time.Duration(0) {
-		ctx, cancel = context.WithTimeout(ctx, wc.defaultTimeout)
-		defer cancel()
-	}
-	err = wc.limiter.WaitN(ctx, len(b))
-	if err != nil {
-		return 0, err
-	}
-	copy(b, out)
-	return n, nil
-}
-
-func (wc *WrappedNetConnection) Write(b []byte) (int, error) {
-	var cancel context.CancelFunc
-
-	if !wc.directions.IsOutbound() {
-		return wc.real.Write(b)
-	}
-	ctx := context.Background()
-	if wc.defaultTimeout != time.Duration(0) {
-		ctx, cancel = context.WithTimeout(ctx, wc.defaultTimeout)
-		defer cancel()
-	}
-	err := wc.limiter.WaitN(ctx, len(b))
-	if err != nil {
-		return 0, err
-	}
-	return wc.real.Write(b)
-}
-
-// Close closes wrapped connection and marks limiter as closed
-// can potentially trigger per connection limiters GC, which is run on the background
-func (wc *WrappedNetConnection) Close() error {
-	wc.limiter.Close()
-	return wc.real.Close()
-}
-
-func (wc *WrappedNetConnection) LocalAddr() net.Addr {
-	return wc.real.LocalAddr()
-}
-
-func (wc *WrappedNetConnection) RemoteAddr() net.Addr {
-	return wc.real.RemoteAddr()
-}
-
-func (wc *WrappedNetConnection) SetDeadline(t time.Time) error {
-	return wc.real.SetDeadline(t)
-}
-
-func (wc *WrappedNetConnection) SetReadDeadline(t time.Time) error {
-	return wc.real.SetReadDeadline(t)
-}
-
-func (wc *WrappedNetConnection) SetWriteDeadline(t time.Time) error {
-	return wc.real.SetWriteDeadline(t)
 }

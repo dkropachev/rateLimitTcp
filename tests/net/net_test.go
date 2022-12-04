@@ -23,7 +23,36 @@ func getLimiterHashFromConnection(conn net.Conn) string {
 	return conn.RemoteAddr().String()
 }
 
-func TestNet(t *testing.T) {
+func TestNet_functional(t *testing.T) {
+	listener := testutils.FindFreePort(TYPE, HOST)
+	defer listener.Close()
+	go func() {
+		limiter := rateLimitTcp.NewRateLimiter(1000, 100, 1000, 100)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connLimiter := limiter.GetPerConnectionLimiter(getLimiterHashFromConnection(conn)).Open()
+			go handleIncomingRequest(connLimiter.WrappedNetConnection(conn).SetDirections(rateLimitTcp.Outbound & rateLimitTcp.Inbound).SetDefaultTimeout(time.Second))
+		}
+	}()
+	listener.Addr()
+	client, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+	assert.NoError(t, err)
+
+	buffer := make([]byte, 1024)
+	n, err := client.Read(buffer)
+	assert.NoError(t, err)
+	assert.Equal(t, len(initMessage), n)
+	assert.Equal(t, initMessage, buffer[:len(initMessage)])
+	randomString := []byte(testutils.RandString(20 + rand.Intn(20)))
+	n, err = client.Write(randomString)
+	assert.NoError(t, err)
+	assert.Equal(t, len(randomString), n)
+}
+
+func TestNet_limit(t *testing.T) {
 	listener := testutils.FindFreePort(TYPE, HOST)
 	defer listener.Close()
 	go func() {
