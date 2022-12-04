@@ -9,16 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func CreateFakeClients(limiter *rateLimitTcp.RateLimiter, n int) MockClients {
-	clients := make([]*MockClient, n)
-	for k := range clients {
-		clients[k] = NewClient(limiter)
-	}
-	return clients
-}
-
 func RunTest(t *testing.T, limiter *rateLimitTcp.RateLimiter, testDuration time.Duration, clientsCount int, confidenceInterval float64) {
-	clients := CreateFakeClients(limiter, clientsCount)
+	clients := NewMockWaitNClients(limiter, clientsCount)
 	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
 	clients.StartAll(ctx).Wait()
 	defer cancel()
